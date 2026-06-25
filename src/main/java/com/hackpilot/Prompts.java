@@ -156,6 +156,13 @@ public final class Prompts {
             the first element. For a single-element wrapper like [{"data":{...}}] the
             leading index is optional - data.attributes.name also works - but for a
             multi-element array you MUST give the index, otherwise the test fails loudly.
+            To INJECT a NEW array element (e.g. spoofing an extra Server Action
+            argument), target the next free index. For a single-element body the next
+            index is 1:
+              MODIFY_PARAM: 1.role = admin           -> appends [{...},{"role":"admin"}]
+              MODIFY_PARAM: 1 = json:{"role":"admin"} -> appends the whole element
+            You may append ONLY at the immediate next index (length); a larger index
+            fails loudly so you cannot leave gaps.
 
             VALUE TYPES IN JSON:
             By default the value is written as a JSON STRING, so payloads are preserved

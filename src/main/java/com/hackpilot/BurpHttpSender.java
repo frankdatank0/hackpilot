@@ -147,8 +147,11 @@ public class BurpHttpSender {
      *   data.relationships.agents.data.0.id   (0 indexes the first array element)
      *
      * If the final key does not exist on an object it is ADDED (mass-assignment
-     * testing). Out-of-range indices and bad paths throw — surfaced as an ERROR
-     * SendResult rather than a silently mangled request.
+     * testing), and a new array element can be APPENDED by targeting the next free
+     * index (idx == length) — e.g. 1.role on a single-element body injects a second
+     * element (Next.js Server Action argument spoofing). Other out-of-range indices
+     * and bad object paths throw — surfaced as an ERROR SendResult rather than a
+     * silently mangled request.
      */
     private HttpRequest modifyJsonParam(HttpRequest original, String body,
                                         String paramPath, String newValue) {
@@ -176,8 +179,9 @@ public class BurpHttpSender {
 
         for (int i = 0; i < segs.length - 1; i++) {
             String seg = segs[i].trim();
+            String nextSeg = segs[i + 1].trim();
             current = unwrapSingletonArray(current, seg);
-            current = descend(current, seg, path);
+            current = descend(current, seg, nextSeg, path);
         }
 
         String last = segs[segs.length - 1].trim();
@@ -187,11 +191,18 @@ public class BurpHttpSender {
         if (current.isJsonArray()) {
             JsonArray arr = current.getAsJsonArray();
             int idx = parseIndex(last, path);
-            if (idx < 0 || idx >= arr.size()) {
+            if (idx == arr.size()) {
+                // Append at the next free index — lets the model inject a NEW array
+                // element (e.g. a spoofed Next.js Server Action argument) instead of
+                // only overwriting an existing one.
+                arr.add(value);
+            } else if (idx < 0 || idx > arr.size()) {
                 throw new IllegalArgumentException(
-                        "HackPilot: array index " + idx + " out of bounds for path '" + path + "'");
+                        "HackPilot: array index " + idx + " out of bounds for path '" + path
+                        + "' (size " + arr.size() + "; you may append only at index " + arr.size() + ")");
+            } else {
+                arr.set(idx, value);
             }
-            arr.set(idx, value);
         } else if (current.isJsonObject()) {
             // add() replaces an existing key or inserts a new one (mass assignment).
             current.getAsJsonObject().add(last, value);
@@ -201,14 +212,30 @@ public class BurpHttpSender {
         }
     }
 
-    /** Steps one level into an object key or array index. */
-    private JsonElement descend(JsonElement current, String seg, String fullPath) {
+    /**
+     * Steps one level into an object key or array index.
+     *
+     * When the segment is an array index one past the end (idx == size), a new
+     * element is appended and returned, so a multi-segment path can build out a
+     * freshly-injected element (e.g. 1.role on a single-element body). The new
+     * element's type is inferred from the NEXT segment: a numeric next segment
+     * makes an array, otherwise an object. Missing OBJECT keys still fail loudly —
+     * only explicit array append auto-creates, so hallucinated object paths are
+     * not silently materialized.
+     */
+    private JsonElement descend(JsonElement current, String seg, String nextSeg, String fullPath) {
         if (current.isJsonArray()) {
             JsonArray arr = current.getAsJsonArray();
             int idx = parseIndex(seg, fullPath);
-            if (idx < 0 || idx >= arr.size()) {
+            if (idx == arr.size()) {
+                JsonElement created = isIndex(nextSeg) ? new JsonArray() : new JsonObject();
+                arr.add(created);
+                return created;
+            }
+            if (idx < 0 || idx > arr.size()) {
                 throw new IllegalArgumentException(
-                        "HackPilot: array index " + idx + " out of bounds for path '" + fullPath + "'");
+                        "HackPilot: array index " + idx + " out of bounds for path '" + fullPath
+                        + "' (size " + arr.size() + "; you may append only at index " + arr.size() + ")");
             }
             return arr.get(idx);
         } else if (current.isJsonObject()) {
